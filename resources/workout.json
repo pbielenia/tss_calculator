@@ -1,0 +1,20 @@
+[
+    {
+        "type": "steady",
+        "duration": 20,
+        "powerZone": "S3"
+    },
+    {
+        "type": "steady",
+        "duration": 35,
+        "powerZone": "S2"
+    },
+    {
+        "type": "interval",
+        "repetitions": 5,
+        "workDuration": 10,
+        "restDuration": 5,
+        "workPowerZone": "S3",
+        "restPowerZone": "S1"
+    }
+]

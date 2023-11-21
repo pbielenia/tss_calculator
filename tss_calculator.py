@@ -2,6 +2,7 @@ import argparse
 import fitdecode
 import logging
 import os.path
+import json
 
 resources_directory = 'resources'
 source_filename = '2023-11-16-20-20-52.fit'
@@ -38,6 +39,99 @@ class FitParser:
     def _parse_frame_record(self, frame):
         if frame.has_field('power'):
             self._power_readings.append(frame.get_value('power'))
+
+
+class JsonParser:
+    def __init__(self, ftp):
+        self._total_duration = 0
+        self._power_readings = list()
+        self._ftp = ftp
+
+    def get_total_duration(self):
+        return self._total_duration
+
+    def get_power_readings(self):
+        return self._power_readings
+
+    def parse_file(self, filepath):
+        with open(filepath) as json_file:
+            json_content = json.load(json_file)
+            for workout_block in json_content:
+                self._parse_workout_block(workout_block)
+
+    def _parse_workout_block(self, workout_block):
+        print(workout_block)
+        if "type" not in workout_block:
+            logging.error("Missing workout block 'type'")
+            return
+        block_type = workout_block["type"]
+        if block_type == "steady":
+            self._parse_workout_block_steady(workout_block)
+        elif block_type == "interval":
+            self._parse_workout_block_interval(workout_block)
+        else:
+            logging.error(
+                "Workout block of type '{}' is not supported".format(block_type))
+            return
+
+    def _parse_workout_block_steady(self, workout_block):
+        if "duration" not in workout_block:
+            logging.error(
+                "Missing 'duration' in a working block of 'steady' type")
+            return
+        if "powerZone" not in workout_block:
+            logging.error(
+                "Missing 'powerZone' in a working block of 'steady' type")
+            return
+
+        duration_in_minutes = workout_block["duration"]
+        power_zone = workout_block["powerZone"]
+
+        if not JsonParser._duration_is_valid(duration_in_minutes):
+            logging.error("Read duration of value '{}' has been found invalid".format(
+                duration_in_minutes))
+            return
+        if not JsonParser._power_zone_is_valid(power_zone):
+            logging.error(
+                "Read power zone of value '{}' has been found invalid".format(power_zone))
+            return
+
+        duration_in_seconds = JsonParser._convert_minutes_to_seconds(
+            duration_in_minutes)
+        self._total_duration += duration_in_seconds
+        target_power = self._find_power_at_power_zone(power_zone)
+        self._generate_power_readings(duration_in_seconds, target_power)
+
+    def _duration_is_valid(duration_in_minutes):
+        return duration_in_minutes > 0 and duration_in_minutes < 400
+
+    def _power_zone_is_valid(power_zone):
+        return power_zone in ("S1", "S2", "S3", "SST", "S4", "S5")
+
+    def _find_power_at_power_zone(self, power_zone):
+        power_zones_to_power = {
+            "S1": 0.5,
+            "S2": 0.61,
+            "S3": 0.88,
+            "SST": 0.91,
+            "S4": 0.98,
+            "S5": 1.13
+        }
+
+        if power_zone not in power_zones_to_power:
+            logging.error("Power zone factor not found: {}".format(power_zone))
+            return 0
+        return power_zones_to_power[power_zone] * self._ftp
+
+    def _convert_minutes_to_seconds(minutes):
+        return minutes * 60
+
+    def _generate_power_readings(self, duration_in_seconds, power):
+        power_readings = [power] * duration_in_seconds
+        self._power_readings += power_readings
+
+    def _parse_workout_block_interval(self, workout_block):
+        pass
 
 
 class NormalizedPowerCalculator:
@@ -100,23 +194,29 @@ def find_training_stres_score(duration, normalized_power, intensity_factor, ftp)
     return round((duration * normalized_power * intensity_factor) / (ftp * number_of_seconds_in_hour) * 100, round_number_of_digits)
 
 
-def calculate_tss(ftp, fit_files):
+def read_data_from_fit_files(fit_files):
     parser = FitParser()
-
     for file in fit_files:
         parser.parse_file(file)
+    return parser.get_total_duration(), parser.get_power_readings()
 
-    total_duration = parser.get_total_duration()
 
-    normalized_power = NormalizedPowerCalculator(
-        parser.get_power_readings()).get_result()
+def read_data_from_json_files(json_files, ftp):
+    parser = JsonParser(ftp)
+    for file in json_files:
+        parser.parse_file(file)
+    return parser.get_total_duration(), parser.get_power_readings()
+
+
+def calculate_tss(ftp, duration, power_readings):
+    normalized_power = NormalizedPowerCalculator(power_readings).get_result()
     intensity_factor = find_intensity_factor(normalized_power, ftp)
     training_stress_score = find_training_stres_score(
-        total_duration, normalized_power, intensity_factor, ftp)
+        duration, normalized_power, intensity_factor, ftp)
 
     table = [
         ["FTP", "{} W".format(ftp)],
-        ["Total workout duration", "{:.0f} min".format(total_duration / 60)],
+        ["Total workout duration", "{:.0f} min".format(duration / 60)],
         ["{}".format('-' * 25), "{}".format('-' * 10)],
         ["Normalized Power", "{:.0f} W".format(normalized_power)],
         ["Intensity Factor", intensity_factor],
@@ -133,7 +233,7 @@ def calculate_tss(ftp, fit_files):
 def parse_input_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ftp', required=True, type=int)
-    parser.add_argument('--fit', action='append', required=True, nargs='*')
+    parser.add_argument('--data', action='append', required=True, nargs='*')
     args = parser.parse_args()
     return args
 
@@ -141,15 +241,36 @@ def parse_input_arguments():
 def input_arguments_are_valid(arguments):
     valid_ftp_min = 100
     valid_ftp_max = 400
+    file_type_fit = ".fit"
+    file_type_json = ".json"
+    actual_file_type = None
 
     if arguments.ftp < valid_ftp_min or arguments.ftp > valid_ftp_max:
         logging.error("Provided FTP is out of expected range: {} not in {}..{}". format(
             arguments.ftp, valid_ftp_min, valid_ftp_max))
         return False
 
-    for file in arguments.fit[0]:
+    for file in arguments.data[0]:
+        current_file_type = None
         if not os.path.isfile(file):
             logging.error("File does not exist: {}".format(file))
+            return False
+        if file.endswith(file_type_fit):
+            current_file_type = file_type_fit
+        elif file.endswith(file_type_json):
+            current_file_type = file_type_json
+        else:
+            logging.error(
+                "Seems file '{}' has not supported extension. Supported extensions are: '{}', '{}'"
+                .format(file, file_type_fit, file_type_json))
+            return False
+
+        if actual_file_type is None:
+            actual_file_type = current_file_type
+        elif actual_file_type != current_file_type:
+            logging.error(
+                "Seems that files with different extensions were provided: '{}' and '{}'."
+                .format(actual_file_type, current_file_type))
             return False
 
     return True
@@ -158,7 +279,19 @@ def input_arguments_are_valid(arguments):
 if __name__ == "__main__":
     input_arguments = parse_input_arguments()
     if not input_arguments_are_valid(input_arguments):
-        print("Invalid args")
         exit()
 
-    calculate_tss(input_arguments.ftp, input_arguments.fit[0])
+    duration = None
+    power_readings = None
+
+    first_file = input_arguments.data[0][0]
+    if first_file.endswith('.fit'):
+        duration, power_readings = read_data_from_fit_files(
+            input_arguments.data[0])
+    elif first_file.endswith('.json'):
+        duration, power_readings = read_data_from_json_files(
+            input_arguments.data[0], input_arguments.ftp)
+    else:
+        logging.error("File extension not supported: {}".format(first_file))
+
+    calculate_tss(input_arguments.ftp, duration, power_readings)
