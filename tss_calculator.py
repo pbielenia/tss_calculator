@@ -57,13 +57,41 @@ class JsonParser:
         with open(filepath) as json_file:
             json_content = json.load(json_file)
             for workout_block in json_content:
+                print(workout_block)
+                if not self._validate_workout_block(workout_block):
+                    continue
                 self._parse_workout_block(workout_block)
 
+    def _validate_workout_block(workout_block):
+        block_type = workout_block["type"]
+
+        if block_type == "steady":
+            return JsonParser._validate_workout_block_steady(workout_block)
+        elif block_type == "interval":
+            return JsonParser._validate_workout_block_interval(workout_block)
+
+        logging.error("Workout block of type '{}' is not supported".format(block_type))
+        return False
+
+    def _validate_workout_block_steady(workout_block):
+        if "duration" not in workout_block:
+            logging.error("Missing 'duration' in a working block of 'steady' type")
+            return False
+        if "powerZone" not in workout_block:
+            logging.error("Missing 'powerZone' in a working block of 'steady' type")
+            return False
+        if not JsonParser._duration_is_valid(workout_block["duration"]):
+            logging.error("Read duration of value '{}' has been found invalid".format(workout_block["duration"]))
+            return False
+        if not JsonParser._power_zone_is_valid(workout_block["powerZone"]):
+            logging.error("Read power zone of value '{}' has been found invalid".format(workout_block["powerZone"]))
+            return False
+        return True
+
+    def _validate_workout_block_interval(workout_block):
+        return False
+
     def _parse_workout_block(self, workout_block):
-        print(workout_block)
-        if "type" not in workout_block:
-            logging.error("Missing workout block 'type'")
-            return
         block_type = workout_block["type"]
         if block_type == "steady":
             self._parse_workout_block_steady(workout_block)
@@ -75,26 +103,8 @@ class JsonParser:
             return
 
     def _parse_workout_block_steady(self, workout_block):
-        if "duration" not in workout_block:
-            logging.error(
-                "Missing 'duration' in a working block of 'steady' type")
-            return
-        if "powerZone" not in workout_block:
-            logging.error(
-                "Missing 'powerZone' in a working block of 'steady' type")
-            return
-
         duration_in_minutes = workout_block["duration"]
         power_zone = workout_block["powerZone"]
-
-        if not JsonParser._duration_is_valid(duration_in_minutes):
-            logging.error("Read duration of value '{}' has been found invalid".format(
-                duration_in_minutes))
-            return
-        if not JsonParser._power_zone_is_valid(power_zone):
-            logging.error(
-                "Read power zone of value '{}' has been found invalid".format(power_zone))
-            return
 
         duration_in_seconds = JsonParser._convert_minutes_to_seconds(
             duration_in_minutes)
