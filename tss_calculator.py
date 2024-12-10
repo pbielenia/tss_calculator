@@ -66,30 +66,30 @@ class JsonParser:
         block_type = workout_block["type"]
 
         if block_type == "steady":
-            return JsonParser._validate_workout_block_steady(workout_block)
+            return JsonParser._validate_fields(
+                workout_block,
+                {
+                    "duration", JsonParser._duration_is_valid,
+                    "powerZone", JsonParser._power_zone_is_valid
+                })
         elif block_type == "interval":
-            return JsonParser._validate_workout_block_interval(workout_block)
+            return JsonParser._validate_fields(
+                workout_block,
+                {
+                })
 
         logging.error("Workout block of type '{}' is not supported".format(block_type))
         return False
 
-    def _validate_workout_block_steady(workout_block):
-        if "duration" not in workout_block:
-            logging.error("Missing 'duration' in a working block of 'steady' type")
-            return False
-        if "powerZone" not in workout_block:
-            logging.error("Missing 'powerZone' in a working block of 'steady' type")
-            return False
-        if not JsonParser._duration_is_valid(workout_block["duration"]):
-            logging.error("Read duration of value '{}' has been found invalid".format(workout_block["duration"]))
-            return False
-        if not JsonParser._power_zone_is_valid(workout_block["powerZone"]):
-            logging.error("Read power zone of value '{}' has been found invalid".format(workout_block["powerZone"]))
-            return False
+    def _validate_fields(workout_block, checks: dict, block_type: str):
+        for field_name, check_callback in checks:
+            if field_name not in workout_block:
+                logging.error("Missing '{}' in a workout block of '' type".format(field_name, block_type))
+                return False
+            if not check_callback(workout_block[field_name]):
+                logging.error("'{}' of value '{}' is found invalid".format(field_name, workout_block[field_name]))
+                return False
         return True
-
-    def _validate_workout_block_interval(workout_block):
-        return False
 
     def _parse_workout_block(self, workout_block):
         block_type = workout_block["type"]
