@@ -1,20 +1,33 @@
 [
     {
         "type": "steady",
-        "duration": 20,
-        "powerZone": "S3"
-    },
-    {
-        "type": "steady",
-        "duration": 35,
+        "duration": 4,
         "powerZone": "S2"
     },
     {
         "type": "interval",
-        "repetitions": 5,
-        "workDuration": 10,
-        "restDuration": 5,
-        "workPowerZone": "S3",
+        "repeats": 4,
+        "workDuration": 0.5,
+        "restDuration": 0.25,
+        "workPowerZone": "S4",
         "restPowerZone": "S1"
+    },
+    {
+        "type": "steady",
+        "duration": 4,
+        "powerZone": "S2"
+    },
+    {
+        "type": "interval",
+        "repeats": 5,
+        "workDuration": 4,
+        "restDuration": 3,
+        "workPowerZone": "S4",
+        "restPowerZone": "S1"
+    },
+    {
+        "type": "steady",
+        "duration": 13,
+        "powerZone": "S1"
     }
 ]
