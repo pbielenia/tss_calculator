@@ -61,6 +61,22 @@ class TextParserTests(unittest.TestCase):
         finally:
             os.unlink(filename)
 
+    def test_text_parser_handles_combined_minutes_and_seconds(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+            handle.write("2m30s S2\n")
+            filename = handle.name
+
+        try:
+            parser = get_parser(filename, ftp=200)
+            duration, power_readings = parser.parse()
+
+            self.assertEqual(duration, 150)
+            self.assertEqual(len(power_readings), 150)
+            self.assertEqual(power_readings[0], 122)
+            self.assertEqual(power_readings[-1], 122)
+        finally:
+            os.unlink(filename)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,65 +24,56 @@ class TextParser(JsonParser):
 
     def _parse_line(self, line):
         steady_pattern = re.compile(
-            r"^(?P<duration>\d+(?:\.\d+)?)\s*(?P<unit>[sm])\s+(?P<power_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
+            r"^(?P<duration>[^\s]+)\s+(?P<power_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
             re.IGNORECASE
         )
         interval_pattern = re.compile(
-            r"^(?P<work_duration>\d+(?:\.\d+)?)\s*(?P<work_unit>[sm])\s+(?P<work_power_zone>S\d+|SST|S[1-5])\s*/\s*(?P<rest_duration>\d+(?:\.\d+)?)\s*(?P<rest_unit>[sm])\s+(?P<rest_power_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
+            r"^(?P<work_duration>[^\s]+)\s+(?P<work_power_zone>S\d+|SST|S[1-5])\s*/\s*(?P<rest_duration>[^\s]+)\s+(?P<rest_power_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
             re.IGNORECASE
         )
         ramp_pattern = re.compile(
-            r"^(?P<duration>\d+(?:\.\d+)?)\s*(?P<unit>[sm])\s+ramp\s+(?P<start_zone>S\d+|SST|S[1-5])\s*-\s*(?P<end_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
+            r"^(?P<duration>[^\s]+)\s+ramp\s+(?P<start_zone>S\d+|SST|S[1-5])\s*-\s*(?P<end_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
             re.IGNORECASE
         )
 
         steady_match = steady_pattern.match(line)
         if steady_match:
-            duration = float(steady_match.group("duration"))
-            unit = steady_match.group("unit").lower()
+            duration_literal = steady_match.group("duration")
             power_zone = steady_match.group("power_zone").upper()
             repeats = int(steady_match.group("repeats") or 1)
+            parsed_duration = self._convert_duration_literal_to_minutes(duration_literal)
             for _ in range(repeats):
-                self._parse_workout_block_steady(
-                    self._convert_duration_to_minutes(duration, unit),
-                    power_zone
-                )
+                self._parse_workout_block_steady(parsed_duration, power_zone)
             return
 
         interval_match = interval_pattern.match(line)
         if interval_match:
-            work_duration = float(interval_match.group("work_duration"))
-            work_unit = interval_match.group("work_unit").lower()
+            work_duration_literal = interval_match.group("work_duration")
             work_power_zone = interval_match.group("work_power_zone").upper()
-            rest_duration = float(interval_match.group("rest_duration"))
-            rest_unit = interval_match.group("rest_unit").lower()
+            rest_duration_literal = interval_match.group("rest_duration")
             rest_power_zone = interval_match.group("rest_power_zone").upper()
             repeats = int(interval_match.group("repeats") or 1)
 
             for _ in range(repeats):
                 self._parse_workout_block_steady(
-                    self._convert_duration_to_minutes(work_duration, work_unit),
+                    self._convert_duration_literal_to_minutes(work_duration_literal),
                     work_power_zone
                 )
                 self._parse_workout_block_steady(
-                    self._convert_duration_to_minutes(rest_duration, rest_unit),
+                    self._convert_duration_literal_to_minutes(rest_duration_literal),
                     rest_power_zone
                 )
             return
 
         ramp_match = ramp_pattern.match(line)
         if ramp_match:
-            duration = float(ramp_match.group("duration"))
-            unit = ramp_match.group("unit").lower()
+            duration_literal = ramp_match.group("duration")
             start_zone = ramp_match.group("start_zone").upper()
             end_zone = ramp_match.group("end_zone").upper()
             repeats = int(ramp_match.group("repeats") or 1)
+            parsed_duration = self._convert_duration_literal_to_minutes(duration_literal)
             for _ in range(repeats):
-                self._parse_ramp_segment(
-                    self._convert_duration_to_minutes(duration, unit),
-                    start_zone,
-                    end_zone,
-                )
+                self._parse_ramp_segment(parsed_duration, start_zone, end_zone)
             return
 
         logging.error("Could not parse text workout line: '{}'".format(line))
@@ -112,6 +103,21 @@ class TextParser(JsonParser):
         duration_in_seconds = int(duration_in_minutes * 60)
         self._total_duration += duration_in_seconds
         self._power_readings.extend([power_value] * duration_in_seconds)
+
+    def _convert_duration_literal_to_minutes(self, duration_literal):
+        match = re.fullmatch(
+            r"(?:(?P<minutes>\d+(?:\.\d+)?)m)?(?:(?P<seconds>\d+(?:\.\d+)?)s)?",
+            duration_literal.strip(),
+            re.IGNORECASE
+        )
+        if match is None:
+            raise ValueError("Invalid duration literal '{}'".format(duration_literal))
+
+        minutes = float(match.group("minutes") or 0)
+        seconds = float(match.group("seconds") or 0)
+        if seconds >= 60:
+            raise ValueError("Seconds must be below 60 in duration literal '{}'".format(duration_literal))
+        return minutes + (seconds / 60)
 
     def _convert_duration_to_minutes(self, duration_value, unit):
         if unit == 's':
