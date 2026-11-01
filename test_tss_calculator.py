@@ -42,6 +42,25 @@ class TextParserTests(unittest.TestCase):
         finally:
             os.unlink(filename)
 
+    def test_text_parser_handles_ramp_lines(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+            handle.write("10m ramp S1-S3\n")
+            filename = handle.name
+
+        try:
+            parser = get_parser(filename, ftp=100)
+            duration, power_readings = parser.parse()
+
+            self.assertEqual(duration, 600)
+            self.assertEqual(len(power_readings), 600)
+            self.assertEqual(power_readings[:120], [50] * 120)
+            self.assertEqual(power_readings[120:240], [60] * 120)
+            self.assertEqual(power_readings[240:360], [70] * 120)
+            self.assertEqual(power_readings[360:480], [80] * 120)
+            self.assertEqual(power_readings[480:], [90] * 120)
+        finally:
+            os.unlink(filename)
+
 
 if __name__ == "__main__":
     unittest.main()
