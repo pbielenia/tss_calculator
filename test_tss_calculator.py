@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from tss_calculator import TextParser
+from tss_calculator import TextParser, get_parser
 
 
 class TextParserTests(unittest.TestCase):
@@ -23,6 +23,22 @@ class TextParserTests(unittest.TestCase):
             self.assertEqual(parser.get_power_readings()[120], 176)
             self.assertEqual(parser.get_power_readings()[240], 176)
             self.assertEqual(parser.get_power_readings()[270], 100)
+        finally:
+            os.unlink(filename)
+
+    def test_factory_returns_parser_with_common_interface(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+            handle.write("2m S2\n")
+            filename = handle.name
+
+        try:
+            parser = get_parser(filename, ftp=200)
+            duration, power_readings = parser.parse()
+
+            self.assertEqual(duration, 120)
+            self.assertEqual(len(power_readings), 120)
+            self.assertEqual(power_readings[0], 122)
+            self.assertEqual(parser._find_power_at_power_zone("S2"), 122)
         finally:
             os.unlink(filename)
 

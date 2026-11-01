@@ -1,255 +1,10 @@
 import argparse
-import fitdecode
 import logging
 import os.path
-import json
-import re
 
-resources_directory = 'resources'
-source_filename = '2023-11-16-20-20-52.fit'
-
-
-class FitParser:
-    def __init__(self):
-        self._total_duration = 0
-        self._power_readings = list()
-
-    def get_total_duration(self):
-        return self._total_duration
-
-    def get_power_readings(self):
-        return self._power_readings
-
-    def parse_file(self, filepath):
-        with fitdecode.FitReader(filepath) as fit:
-            for frame in fit:
-                self._parse_frame(frame)
-
-    def _parse_frame(self, frame):
-        if frame.frame_type != fitdecode.FIT_FRAME_DATA:
-            return
-        if frame.name == 'session':
-            self._parse_frame_session(frame)
-        if frame.name == 'record':
-            self._parse_frame_record(frame)
-
-    def _parse_frame_session(self, frame):
-        if frame.has_field('total_elapsed_time'):
-            self._total_duration += frame.get_value('total_elapsed_time')
-
-    def _parse_frame_record(self, frame):
-        if frame.has_field('power'):
-            self._power_readings.append(frame.get_value('power'))
-
-
-class JsonParser:
-    KEY_INTERVAL_REPEATS = "repeats"
-    KEY_INTERVAL_REST_DURATION = "restDuration"
-    KEY_INTERVAL_REST_POWER_ZONE = "restPowerZone"
-    KEY_INTERVAL_WORK_DURATION = "workDuration"
-    KEY_INTERVAL_WORK_POWER_ZONE = "workPowerZone"
-
-    def __init__(self, ftp):
-        self._total_duration = 0
-        self._power_readings = list()
-        self._ftp = ftp
-
-    def get_total_duration(self):
-        return self._total_duration
-
-    def get_power_readings(self):
-        return self._power_readings
-
-    def parse_file(self, filepath):
-        with open(filepath) as json_file:
-            json_content = json.load(json_file)
-            for workout_block in json_content:
-                # print(workout_block)
-                if not JsonParser._validate_workout_block(workout_block):
-                    continue
-                self._parse_workout_block(workout_block)
-
-    def _validate_workout_block(workout_block):
-        if not JsonParser._validate_field("type", workout_block, lambda type: len(type) > 1):
-            return False
-
-        block_type = workout_block["type"]
-
-        if block_type == "steady":
-            return JsonParser._validate_block_type_steady(workout_block)
-        elif block_type == "interval":
-            return JsonParser._validate_block_type_interval(workout_block)
-
-        logging.error("Workout block of type '{}' is not supported".format(block_type))
-        return False
-
-    def _validate_fields(workout_block, block_type: str, checks: dict):
-        for field_name, check_callback in checks.items():
-            if not JsonParser._validate_field(field_name, workout_block, check_callback, block_type):
-                return False
-        return True
-
-    def _validate_field(name, workout_block, check_callback, block_type=None):
-        if name not in workout_block:
-            logging.error("Missing '{}' in a workout block{}".format(
-                name, " of '{}' type".format(block_type) if block_type is not None else ""))
-            return False
-        if not check_callback(workout_block[name]):
-            logging.error("'{}' of value '{}' is found invalid".format(name, workout_block[name]))
-            return False
-        return True
-
-    def _validate_block_type_steady(workout_block):
-        return JsonParser._validate_fields(
-            workout_block,
-            "steady",
-            {
-                "duration": JsonParser._duration_is_valid,
-                "powerZone": JsonParser._power_zone_is_valid
-            }
-        )
-
-    def _validate_block_type_interval(workout_block):
-        return JsonParser._validate_fields(
-            workout_block,
-            "interval",
-            {
-                JsonParser.KEY_INTERVAL_REPEATS: lambda integer: integer > 0,
-                JsonParser.KEY_INTERVAL_WORK_DURATION: JsonParser._duration_is_valid,
-                JsonParser.KEY_INTERVAL_REST_DURATION: JsonParser._duration_is_valid,
-                JsonParser.KEY_INTERVAL_WORK_POWER_ZONE: JsonParser._power_zone_is_valid,
-                JsonParser.KEY_INTERVAL_REST_POWER_ZONE: JsonParser._power_zone_is_valid
-            }
-        )
-
-    def _parse_workout_block(self, workout_block):
-        block_type = workout_block["type"]
-        if block_type == "steady":
-            self._parse_workout_block_steady(workout_block["duration"], workout_block["powerZone"])
-        elif block_type == "interval":
-            self._parse_workout_block_interval(workout_block)
-        else:
-            logging.error(
-                "Workout block of type '{}' is not supported".format(block_type))
-            return
-
-    def _parse_workout_block_steady(self, duration_in_minutes, power_zone):
-        duration_in_seconds = JsonParser._convert_minutes_to_seconds(duration_in_minutes)
-        self._total_duration += duration_in_seconds
-
-        target_power = self._find_power_at_power_zone(power_zone)
-        power_readings = self._generate_power_readings_steady(duration_in_seconds, target_power)
-        self._power_readings += power_readings
-
-    def _parse_workout_block_interval(self, workout_block):
-        repeats = workout_block[JsonParser.KEY_INTERVAL_REPEATS]
-        work_duration_in_minutes = workout_block[JsonParser.KEY_INTERVAL_WORK_DURATION]
-        work_power_zone = workout_block[JsonParser.KEY_INTERVAL_WORK_POWER_ZONE]
-        rest_duration_in_minutes = workout_block[JsonParser.KEY_INTERVAL_REST_DURATION]
-        rest_power_zone = workout_block[JsonParser.KEY_INTERVAL_REST_POWER_ZONE]
-
-        for _ in range(repeats):
-            self._parse_workout_block_steady(work_duration_in_minutes, work_power_zone)
-            self._parse_workout_block_steady(rest_duration_in_minutes, rest_power_zone)
-
-    def _duration_is_valid(duration_in_minutes):
-        return duration_in_minutes > 0 and duration_in_minutes < 400
-
-    def _power_zone_is_valid(power_zone):
-        return power_zone in ("S1", "S2", "S3", "SST", "S4", "S5")
-
-    def _find_power_at_power_zone(self, power_zone):
-        power_zones_to_power = {
-            "S1": 0.5,
-            "S2": 0.61,
-            "S3": 0.88,
-            "SST": 0.91,
-            "S4": 0.98,
-            "S5": 1.13
-        }
-
-        if power_zone not in power_zones_to_power:
-            logging.error("Power zone factor not found: {}".format(power_zone))
-            return 0
-        return power_zones_to_power[power_zone] * self._ftp
-
-    def _convert_minutes_to_seconds(minutes):
-        return int(minutes * 60)
-
-    def _generate_power_readings_steady(self, duration_in_seconds, power):
-        return [power] * duration_in_seconds
-
-
-class TextParser(JsonParser):
-    def __init__(self, ftp):
-        super().__init__(ftp)
-
-    def parse_file(self, filepath):
-        with open(filepath, encoding="utf-8") as text_file:
-            for line in text_file:
-                trimmed_line = self._normalize_line(line)
-                if trimmed_line is None:
-                    continue
-                self._parse_line(trimmed_line)
-
-    def _normalize_line(self, line):
-        line_without_comment = line.split("#", 1)[0].strip()
-        if not line_without_comment:
-            return None
-        return line_without_comment
-
-    def _parse_line(self, line):
-        steady_pattern = re.compile(
-            r"^(?P<duration>\d+(?:\.\d+)?)\s*(?P<unit>[sm])\s+(?P<power_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
-            re.IGNORECASE
-        )
-        interval_pattern = re.compile(
-            r"^(?P<work_duration>\d+(?:\.\d+)?)\s*(?P<work_unit>[sm])\s+(?P<work_power_zone>S\d+|SST|S[1-5])\s*/\s*(?P<rest_duration>\d+(?:\.\d+)?)\s*(?P<rest_unit>[sm])\s+(?P<rest_power_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
-            re.IGNORECASE
-        )
-
-        steady_match = steady_pattern.match(line)
-        if steady_match:
-            duration = float(steady_match.group("duration"))
-            unit = steady_match.group("unit").lower()
-            power_zone = steady_match.group("power_zone").upper()
-            repeats = int(steady_match.group("repeats") or 1)
-            for _ in range(repeats):
-                self._parse_workout_block_steady(
-                    self._convert_duration_to_minutes(duration, unit),
-                    power_zone
-                )
-            return
-
-        interval_match = interval_pattern.match(line)
-        if interval_match:
-            work_duration = float(interval_match.group("work_duration"))
-            work_unit = interval_match.group("work_unit").lower()
-            work_power_zone = interval_match.group("work_power_zone").upper()
-            rest_duration = float(interval_match.group("rest_duration"))
-            rest_unit = interval_match.group("rest_unit").lower()
-            rest_power_zone = interval_match.group("rest_power_zone").upper()
-            repeats = int(interval_match.group("repeats") or 1)
-
-            for _ in range(repeats):
-                self._parse_workout_block_steady(
-                    self._convert_duration_to_minutes(work_duration, work_unit),
-                    work_power_zone
-                )
-                self._parse_workout_block_steady(
-                    self._convert_duration_to_minutes(rest_duration, rest_unit),
-                    rest_power_zone
-                )
-            return
-
-        logging.error("Could not parse text workout line: '{}'".format(line))
-
-    def _convert_duration_to_minutes(self, duration_value, unit):
-        if unit == 's':
-            return duration_value / 60
-        if unit == 'm':
-            return duration_value
-        raise ValueError("Unsupported time unit '{}'".format(unit))
+from fit_parser import FitParser
+from json_parser import JsonParser
+from text_parser import TextParser
 
 
 class NormalizedPowerCalculator:
@@ -312,25 +67,17 @@ def find_training_stres_score(duration, normalized_power, intensity_factor, ftp)
     return round((duration * normalized_power * intensity_factor) / (ftp * number_of_seconds_in_hour) * 100, round_number_of_digits)
 
 
-def read_data_from_fit_files(fit_files):
-    parser = FitParser()
-    for file in fit_files:
-        parser.parse_file(file)
-    return parser.get_total_duration(), parser.get_power_readings()
+def get_parser(file_path, ftp=None):
+    file_path_lower = file_path.lower()
 
+    if file_path_lower.endswith('.fit'):
+        return FitParser(file_path)
+    if file_path_lower.endswith('.json'):
+        return JsonParser(ftp, file_path)
+    if file_path_lower.endswith('.txt'):
+        return TextParser(ftp, file_path)
 
-def read_data_from_json_files(json_files, ftp):
-    parser = JsonParser(ftp)
-    for file in json_files:
-        parser.parse_file(file)
-    return parser.get_total_duration(), parser.get_power_readings()
-
-
-def read_data_from_text_files(text_files, ftp):
-    parser = TextParser(ftp)
-    for file in text_files:
-        parser.parse_file(file)
-    return parser.get_total_duration(), parser.get_power_readings()
+    raise ValueError("File extension not supported: {}".format(file_path))
 
 
 def calculate_tss(ftp, duration, power_readings):
@@ -358,7 +105,7 @@ def calculate_tss(ftp, duration, power_readings):
 def parse_input_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ftp', required=True, type=int)
-    parser.add_argument('--data', action='append', required=True, nargs='*')
+    parser.add_argument('--data', nargs='+', required=True)
     args = parser.parse_args()
     return args
 
@@ -376,7 +123,7 @@ def input_arguments_are_valid(arguments):
             arguments.ftp, valid_ftp_min, valid_ftp_max))
         return False
 
-    for file in arguments.data[0]:
+    for file in arguments.data:
         current_file_type = None
         if not os.path.isfile(file):
             logging.error("File does not exist: {}".format(file))
@@ -409,20 +156,7 @@ if __name__ == "__main__":
     if not input_arguments_are_valid(input_arguments):
         exit()
 
-    duration = None
-    power_readings = None
-
-    first_file = input_arguments.data[0][0]
-    if first_file.endswith('.fit'):
-        duration, power_readings = read_data_from_fit_files(
-            input_arguments.data[0])
-    elif first_file.endswith('.json'):
-        duration, power_readings = read_data_from_json_files(
-            input_arguments.data[0], input_arguments.ftp)
-    elif first_file.endswith('.txt'):
-        duration, power_readings = read_data_from_text_files(
-            input_arguments.data[0], input_arguments.ftp)
-    else:
-        logging.error("File extension not supported: {}".format(first_file))
-
+    first_file = input_arguments.data[0]
+    parser = get_parser(first_file, input_arguments.ftp)
+    duration, power_readings = parser.parse()
     calculate_tss(input_arguments.ftp, duration, power_readings)
