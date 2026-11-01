@@ -3,6 +3,7 @@ import fitdecode
 import logging
 import os.path
 import json
+import re
 
 resources_directory = 'resources'
 source_filename = '2023-11-16-20-20-52.fit'
@@ -63,7 +64,7 @@ class JsonParser:
         with open(filepath) as json_file:
             json_content = json.load(json_file)
             for workout_block in json_content:
-                print(workout_block)
+                # print(workout_block)
                 if not JsonParser._validate_workout_block(workout_block):
                     continue
                 self._parse_workout_block(workout_block)
@@ -179,6 +180,78 @@ class JsonParser:
         return [power] * duration_in_seconds
 
 
+class TextParser(JsonParser):
+    def __init__(self, ftp):
+        super().__init__(ftp)
+
+    def parse_file(self, filepath):
+        with open(filepath, encoding="utf-8") as text_file:
+            for line in text_file:
+                trimmed_line = self._normalize_line(line)
+                if trimmed_line is None:
+                    continue
+                self._parse_line(trimmed_line)
+
+    def _normalize_line(self, line):
+        line_without_comment = line.split("#", 1)[0].strip()
+        if not line_without_comment:
+            return None
+        return line_without_comment
+
+    def _parse_line(self, line):
+        steady_pattern = re.compile(
+            r"^(?P<duration>\d+(?:\.\d+)?)\s*(?P<unit>[sm])\s+(?P<power_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
+            re.IGNORECASE
+        )
+        interval_pattern = re.compile(
+            r"^(?P<work_duration>\d+(?:\.\d+)?)\s*(?P<work_unit>[sm])\s+(?P<work_power_zone>S\d+|SST|S[1-5])\s*/\s*(?P<rest_duration>\d+(?:\.\d+)?)\s*(?P<rest_unit>[sm])\s+(?P<rest_power_zone>S\d+|SST|S[1-5])\s*(?:(?P<repeats>\d+)x)?$",
+            re.IGNORECASE
+        )
+
+        steady_match = steady_pattern.match(line)
+        if steady_match:
+            duration = float(steady_match.group("duration"))
+            unit = steady_match.group("unit").lower()
+            power_zone = steady_match.group("power_zone").upper()
+            repeats = int(steady_match.group("repeats") or 1)
+            for _ in range(repeats):
+                self._parse_workout_block_steady(
+                    self._convert_duration_to_minutes(duration, unit),
+                    power_zone
+                )
+            return
+
+        interval_match = interval_pattern.match(line)
+        if interval_match:
+            work_duration = float(interval_match.group("work_duration"))
+            work_unit = interval_match.group("work_unit").lower()
+            work_power_zone = interval_match.group("work_power_zone").upper()
+            rest_duration = float(interval_match.group("rest_duration"))
+            rest_unit = interval_match.group("rest_unit").lower()
+            rest_power_zone = interval_match.group("rest_power_zone").upper()
+            repeats = int(interval_match.group("repeats") or 1)
+
+            for _ in range(repeats):
+                self._parse_workout_block_steady(
+                    self._convert_duration_to_minutes(work_duration, work_unit),
+                    work_power_zone
+                )
+                self._parse_workout_block_steady(
+                    self._convert_duration_to_minutes(rest_duration, rest_unit),
+                    rest_power_zone
+                )
+            return
+
+        logging.error("Could not parse text workout line: '{}'".format(line))
+
+    def _convert_duration_to_minutes(self, duration_value, unit):
+        if unit == 's':
+            return duration_value / 60
+        if unit == 'm':
+            return duration_value
+        raise ValueError("Unsupported time unit '{}'".format(unit))
+
+
 class NormalizedPowerCalculator:
     def __init__(self, input_data):
         self._input_data = input_data
@@ -253,6 +326,13 @@ def read_data_from_json_files(json_files, ftp):
     return parser.get_total_duration(), parser.get_power_readings()
 
 
+def read_data_from_text_files(text_files, ftp):
+    parser = TextParser(ftp)
+    for file in text_files:
+        parser.parse_file(file)
+    return parser.get_total_duration(), parser.get_power_readings()
+
+
 def calculate_tss(ftp, duration, power_readings):
     normalized_power = NormalizedPowerCalculator(power_readings).get_result()
     intensity_factor = find_intensity_factor(normalized_power, ftp)
@@ -288,6 +368,7 @@ def input_arguments_are_valid(arguments):
     valid_ftp_max = 400
     file_type_fit = ".fit"
     file_type_json = ".json"
+    file_type_txt = ".txt"
     actual_file_type = None
 
     if arguments.ftp < valid_ftp_min or arguments.ftp > valid_ftp_max:
@@ -304,10 +385,12 @@ def input_arguments_are_valid(arguments):
             current_file_type = file_type_fit
         elif file.endswith(file_type_json):
             current_file_type = file_type_json
+        elif file.endswith(file_type_txt):
+            current_file_type = file_type_txt
         else:
             logging.error(
-                "Seems file '{}' has not supported extension. Supported extensions are: '{}', '{}'"
-                .format(file, file_type_fit, file_type_json))
+                "Seems file '{}' has not supported extension. Supported extensions are: '{}', '{}', '{}'"
+                .format(file, file_type_fit, file_type_json, file_type_txt))
             return False
 
         if actual_file_type is None:
@@ -335,6 +418,9 @@ if __name__ == "__main__":
             input_arguments.data[0])
     elif first_file.endswith('.json'):
         duration, power_readings = read_data_from_json_files(
+            input_arguments.data[0], input_arguments.ftp)
+    elif first_file.endswith('.txt'):
+        duration, power_readings = read_data_from_text_files(
             input_arguments.data[0], input_arguments.ftp)
     else:
         logging.error("File extension not supported: {}".format(first_file))
